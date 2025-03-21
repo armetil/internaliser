@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
 
@@ -146,6 +147,89 @@ def compute_internalization_rate(matched_df):
     return total_matched / total_shares
 
 
+def compute_internalization_rate_by_instrument1 (matched_df):
+    internalization_rate = {}
+    for instrument in set(matched_df['instrument'].to_list()):
+        total_shares = matched_df.loc[matched_df['instrument'] == instrument]['quantity'].sum()
+        total_matched = matched_df.loc[matched_df['instrument'] == instrument]['matched_quantity'].sum()  # sum of matched shares for all orders
+        if total_shares == 0:
+            internalization_rate[instrument] = 0.0
+        internalization_rate[instrument] = total_matched / total_shares
+    return internalization_rate
+
+
+def compute_internalization_rate_by_instrument(matched_df):
+    """
+    Computes the internalization rate by instrument:
+      sum(matched_quantity) / sum(quantity)  for each instrument
+    Returns a DataFrame with columns: total_quantity, total_matched, rate
+    """
+    group = matched_df.groupby('instrument').agg(
+        total_quantity=('quantity', 'sum'),
+        total_matched=('matched_quantity', 'sum')
+    )
+    group['internalization_rate'] = group['total_matched'] / group['total_quantity']
+
+    group['internalization_rate'] = (group['internalization_rate'] * 100).round(2).astype(str) + '%'
+    return group
+
+
+def plot_evolution_of_internalization_rate(matched_df):
+    """
+    Plots the evolution of the internalization rate over time:
+      1) Overall cumulative rate vs. time
+      2) Cumulative rate by instrument vs. time (multiple lines)
+
+    We'll:
+      - Sort by time.
+      - Compute cumulative sums of quantity and matched_quantity.
+      - Plot ratio = cumulative_matched / cumulative_quantity as a function of time.
+    """
+
+    # Sort by time
+    df_sorted = matched_df.sort_values('time').copy()
+
+    # -------------------------
+    # 1) Overall Cumulative Rate
+    # -------------------------
+    df_sorted['cumulative_quantity'] = df_sorted['quantity'].cumsum()
+    df_sorted['cumulative_matched'] = df_sorted['matched_quantity'].cumsum()
+    df_sorted['cumulative_rate'] = df_sorted['cumulative_matched'] / df_sorted['cumulative_quantity']
+
+    plt.figure()
+    plt.plot(df_sorted['time'], df_sorted['cumulative_rate'])
+    plt.title('Overall Cumulative Internalization Rate Over Time')
+    plt.xlabel('Time')
+    plt.ylabel('Cumulative Internalization Rate')
+    plt.grid(True)
+    plt.show()
+
+    # -----------------------------------
+    # 2) Cumulative Rate By Instrument
+    # -----------------------------------
+    # We group by instrument but still plot as a time series,
+    # so we do cumulative sums *per instrument* in time order.
+    df_by_instr = df_sorted.copy()
+    df_by_instr['cumulative_qty_instr'] = df_by_instr.groupby('instrument')['quantity'].cumsum()
+    df_by_instr['cumulative_match_instr'] = df_by_instr.groupby('instrument')['matched_quantity'].cumsum()
+    df_by_instr['cumulative_rate_instr'] = (
+            df_by_instr['cumulative_match_instr'] / df_by_instr['cumulative_qty_instr']
+    )
+
+    plt.figure()
+    for instr in sorted(df_by_instr['instrument'].unique()):
+        subset = df_by_instr[df_by_instr['instrument'] == instr]
+        # Plot each instrument's line on the same figure
+        plt.plot(subset['time'], subset['cumulative_rate_instr'], label=instr)
+
+    plt.title('Cumulative Internalization Rate By Instrument Over Time')
+    plt.xlabel('Time')
+    plt.ylabel('Cumulative Internalization Rate')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
 if __name__ == "__main__":
     # 1) Generate sample data
     n = 200000
@@ -158,9 +242,15 @@ if __name__ == "__main__":
     # 3) Compute internalization rate (by shares)
     internal_rate = compute_internalization_rate(matched_results)
 
+    internal_rate_dct = compute_internalization_rate_by_instrument(matched_results)
+
     print(f"{n=}; {minutes=}")
     print("=== Orders Data ===")
     print(df_orders)
     print("\n=== Matched Results ===")
     print(matched_results)
     print(f"\nInternalization Rate (by shares): {internal_rate:.2%}")
+    print("\n=== Internalization Rate by Instrument ===")
+    print(internal_rate_dct)
+
+    plot_evolution_of_internalization_rate(matched_results)
