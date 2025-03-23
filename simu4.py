@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import math
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
 import plotly.graph_objects as go
@@ -117,19 +118,28 @@ def compute_fill_rate_stats(matched_df):
 
 def plot_combined_dashboard(matched_df, rolling_window=1000):
     instruments = matched_df['instrument'].unique()
-    num_rows = 4 + len(instruments)
+    rows_instruments = math.ceil(len(instruments)/2)
+
+    num_rows = 1 + rows_instruments + 2
 
     fig = make_subplots(
-        rows=num_rows, cols=1,
+        rows=num_rows, cols=2,
         subplot_titles=(
-            ["Overall Internalization Rate"] +
-            ["Cumulative & Rolling Rate by Instrument"] +
-            ["Distribution of Avg Time to Match"] +
-            [f"Avg Time to Match - {instr}" for instr in instruments] +
-            ["Match Fill Rate Over Time"]
+                ["Overall Internalization Rate"] +
+                ["Cumulative & Rolling Rate by Instrument"] +
+                ["Distribution of Avg Time to Match"] +
+                [f"Avg Time to Match - {instr}" for instr in instruments] +
+                ["Match Fill Rate Over Time", ""] +
+                ["Histogram of Daily Internalization Rate", "Cumulative Distribution Function (CDF)"]
         ),
-        shared_xaxes=False
+        shared_xaxes=False,
+        vertical_spacing=0.05
     )
+
+    # Fill empty right-hand cells with invisible traces to preserve layout
+    for r in range(1, num_rows):
+        if r != num_rows:
+            fig.add_trace(go.Scatter(x=[], y=[], showlegend=False), row=r, col=2)
 
     df_sorted = matched_df.sort_values('time').copy()
     df_sorted['cumulative_quantity'] = df_sorted['quantity'].cumsum()
@@ -146,113 +156,63 @@ def plot_combined_dashboard(matched_df, rolling_window=1000):
     for instr in sorted(instruments):
         sub = df_sorted[df_sorted['instrument'] == instr].copy()
         sub['cumulative_instr'] = sub['matched_quantity'].cumsum() / sub['quantity'].cumsum()
-        sub['rolling_instr'] = sub['matched_quantity'].rolling(window=rolling_window, min_periods=1).sum() / sub['quantity'].rolling(window=rolling_window, min_periods=1).sum()
-        fig.add_trace(go.Scatter(x=sub['time'], y=sub['cumulative_instr'], name=f'{instr} Cumulative'), row=2, col=1)
-        fig.add_trace(go.Scatter(x=sub['time'], y=sub['rolling_instr'], name=f'{instr} Rolling'), row=2, col=1)
-    fig.update_yaxes(title_text='Rate', row=2, col=1)
+        sub['rolling_instr'] = sub['matched_quantity'].rolling(window=rolling_window, min_periods=1).sum() / sub[
+            'quantity'].rolling(window=rolling_window, min_periods=1).sum()
+        fig.add_trace(go.Scatter(x=sub['time'], y=sub['cumulative_instr'], name=f'{instr} Cumulative'), row=1, col=2)
+        fig.add_trace(go.Scatter(x=sub['time'], y=sub['rolling_instr'], name=f'{instr} Rolling'), row=1, col=2)
+        fig.update_yaxes(title_text='Rate', row=1, col=2)
 
-    fig.add_trace(go.Histogram(x=matched_df['avg_time_to_match'].dropna(), nbinsx=100), row=3, col=1)
+    fig.add_trace(go.Histogram(x=matched_df['avg_time_to_match'].dropna(), nbinsx=100), row=2, col=1)
 
     for i, instr in enumerate(instruments):
         x = matched_df[matched_df['instrument'] == instr]['avg_time_to_match'].dropna()
-        fig.add_trace(go.Histogram(x=x, nbinsx=100, name=instr), row=4 + i, col=1)
-        fig.update_xaxes(title_text='Time Sec', row=4 + i, col=1)
-        fig.update_yaxes(title_text='Orders', row=4 + i, col=1)
+        r = 2 + int((1+i) / 2)
+        c = 1 + ((1+i) % 2)
+        fig.add_trace(go.Histogram(x=x, nbinsx=100, name=instr), row=r, col=c)
+        fig.update_xaxes(title_text='Time Sec', row=r, col=c)
+        fig.update_yaxes(title_text='Orders', row=r, col=c)
 
-    last_row = num_rows
+    fill_row = num_rows - 1
     matched_df['time_bucket'] = matched_df['time'].dt.floor('H')
     matched_df['match_fill_rate'] = matched_df['matched_quantity'] / matched_df['quantity']
 
     overall_bucket = matched_df.groupby('time_bucket')['match_fill_rate'].mean().reset_index()
-    fig.add_trace(go.Scatter(x=overall_bucket['time_bucket'], y=overall_bucket['match_fill_rate'], name='Overall Match Fill Rate', mode='lines+markers'), row=last_row, col=1)
+    fig.add_trace(
+        go.Scatter(x=overall_bucket['time_bucket'], y=overall_bucket['match_fill_rate'], name='Overall Match Fill Rate',
+                   mode='lines+markers'), row=fill_row, col=1)
 
     for instr in instruments:
-        instr_bucket = matched_df[matched_df['instrument'] == instr].groupby('time_bucket')['match_fill_rate'].mean().reset_index()
-        fig.add_trace(go.Scatter(x=instr_bucket['time_bucket'], y=instr_bucket['match_fill_rate'], name=f'{instr} Match Fill Rate', mode='lines+markers'), row=last_row, col=1)
+        instr_bucket = matched_df[matched_df['instrument'] == instr].groupby('time_bucket')[
+            'match_fill_rate'].mean().reset_index()
+    fig.add_trace(
+        go.Scatter(x=instr_bucket['time_bucket'], y=instr_bucket['match_fill_rate'], name=f'{instr} Match Fill Rate',
+                   mode='lines+markers'), row=fill_row, col=1)
 
-    fig.update_yaxes(title_text='Match Fill Rate', row=last_row, col=1)
-    fig.update_xaxes(title_text='Time Bucket', row=last_row, col=1)
+    fig.update_yaxes(title_text='Match Fill Rate', row=fill_row, col=1)
+    fig.update_xaxes(title_text='Time Bucket', row=fill_row, col=1)
 
-    fig.update_layout(height=500 * num_rows, width=1500, title_text="Internalization Dashboard with Fill Rate Trend")
-    fig.show()
-
-    def plot_internalization_distribution(matched_df):
-        matched_df = matched_df.copy()
-        matched_df['day'] = matched_df['time'].dt.date
-        matched_df['internalization_rate'] = matched_df['matched_quantity'] / matched_df['quantity']
-
-        # Overall daily internalization rate
-        daily_overall = matched_df.groupby('day').agg(
-            total_qty=('quantity', 'sum'),
-            total_matched=('matched_quantity', 'sum')
-        )
-        daily_overall['daily_internalization_rate'] = daily_overall['total_matched'] / daily_overall['total_qty']
-
-        # By instrument
-        daily_by_instr = matched_df.groupby(['instrument', 'day']).agg(
-            total_qty=('quantity', 'sum'),
-            total_matched=('matched_quantity', 'sum')
-        )
-        daily_by_instr['daily_internalization_rate'] = daily_by_instr['total_matched'] / daily_by_instr['total_qty']
-        daily_by_instr = daily_by_instr.reset_index()
-
-        fig = go.Figure()
-
-        fig.add_trace(go.Histogram(
-            x=daily_overall['daily_internalization_rate'],
-            name='Overall',
-            opacity=0.6,
-            nbinsx=50
-        ))
-
-        for instr in daily_by_instr['instrument'].unique():
-            sub = daily_by_instr[daily_by_instr['instrument'] == instr]
-            fig.add_trace(go.Histogram(
-                x=sub['daily_internalization_rate'],
-                name=instr,
-                opacity=0.6,
-                nbinsx=50
-            ))
-
-        fig.update_layout(
-            barmode='overlay',
-            title='Distribution of Daily Internalization Rate (Overall & by Instrument)',
-            xaxis_title='Daily Internalization Rate',
-            yaxis_title='Frequency',
-            width=1000,
-            height=500
-        )
-        fig.show()
-
-
-def plot_internalization_distribution(matched_df):
-    matched_df = matched_df.copy()
+    # Final Row: Histogram and CDF of Daily Internalization Rate
+    hist_cdf_row = num_rows
     matched_df['day'] = matched_df['time'].dt.date
-    matched_df['internalization_rate'] = matched_df['matched_quantity'] / matched_df['quantity']
-
-    # Overall daily internalization rate
     daily_overall = matched_df.groupby('day').agg(
         total_qty=('quantity', 'sum'),
         total_matched=('matched_quantity', 'sum')
     )
     daily_overall['daily_internalization_rate'] = daily_overall['total_matched'] / daily_overall['total_qty']
 
-    # By instrument
     daily_by_instr = matched_df.groupby(['instrument', 'day']).agg(
         total_qty=('quantity', 'sum'),
         total_matched=('matched_quantity', 'sum')
-    )
+    ).reset_index()
     daily_by_instr['daily_internalization_rate'] = daily_by_instr['total_matched'] / daily_by_instr['total_qty']
-    daily_by_instr = daily_by_instr.reset_index()
-
-    fig = go.Figure()
 
     fig.add_trace(go.Histogram(
         x=daily_overall['daily_internalization_rate'],
         name='Overall',
         opacity=0.6,
-        nbinsx=50
-    ))
+        nbinsx=50,
+        showlegend=True
+    ), row=hist_cdf_row, col=1)
 
     for instr in daily_by_instr['instrument'].unique():
         sub = daily_by_instr[daily_by_instr['instrument'] == instr]
@@ -260,17 +220,36 @@ def plot_internalization_distribution(matched_df):
             x=sub['daily_internalization_rate'],
             name=instr,
             opacity=0.6,
-            nbinsx=50
-        ))
+            nbinsx=50,
+            showlegend=True
+        ), row=hist_cdf_row, col=1)
 
-    fig.update_layout(
-        barmode='overlay',
-        title='Distribution of Daily Internalization Rate (Overall & by Instrument)',
-        xaxis_title='Daily Internalization Rate',
-        yaxis_title='Frequency',
-        width=1500,
-        height=500
-    )
+    cdf_data = daily_overall['daily_internalization_rate'].sort_values()
+    fig.add_trace(go.Scatter(
+        x=cdf_data,
+        y=np.linspace(0, 1, len(cdf_data)),
+        mode='lines',
+        name='Overall CDF',
+        line=dict(dash='solid')
+    ), row=hist_cdf_row, col=2)
+
+    for instr in daily_by_instr['instrument'].unique():
+        sub = daily_by_instr[daily_by_instr['instrument'] == instr]['daily_internalization_rate'].sort_values()
+        fig.add_trace(go.Scatter(
+            x=sub,
+            y=np.linspace(0, 1, len(sub)),
+            mode='lines',
+            name=f'{instr} CDF',
+            line=dict(dash='dot')
+        ), row=hist_cdf_row, col=2)
+
+    fig.update_xaxes(title_text='Daily Internalization Rate', tickformat=".0%", row=hist_cdf_row, col=2)
+    fig.update_yaxes(title_text='Frequency', row=hist_cdf_row, col=1)
+    fig.update_xaxes(title_text='Rate', tickformat=".0%", row=hist_cdf_row, col=2)
+    fig.update_yaxes(title_text='Cumulative Probability', row=hist_cdf_row, col=2)
+
+    fig.update_layout(height=400 * num_rows, width=1600,
+                      title_text="Internalization Dashboard with Fill Rate Trend + Distribution")
     fig.show()
 
 
@@ -338,4 +317,3 @@ if __name__ == "__main__":
     print("Internalization metrics exported to 'internalization_report.html'")
 
     plot_combined_dashboard(matched_df)
-    plot_internalization_distribution(matched_df)
