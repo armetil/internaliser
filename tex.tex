@@ -1,0 +1,315 @@
+\documentclass[10pt]{article}
+
+\usepackage{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{physics}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\newcommand{\expect}{\operatorname{E}\expectarg}
+\DeclarePairedDelimiterX{\expectarg}[1]{[}{]}{
+  \ifnum\currentgrouptype=16 \else\begingroup\fi
+  \activatebar#1
+  \ifnum\currentgrouptype=16 \else\endgroup\fi
+}
+
+\newcommand{\innermid}{\nonscript\;\delimsize\vert\nonscript\;}
+\newcommand{\activatebar}{%
+  \begingroup\lccode`\~=`\|
+  \lowercase{\endgroup\let~}\innermid 
+  \mathcode`|=\string"8000
+}
+
+\newcommand{\property}[2][]{\begin{flushleft}
+    \textbf{Property #1}: \textit{#2}
+\end{flushleft}}
+
+\newcommand{\sol}{\textbf{Solution}:}
+
+\newcommand{\maketitletwo}{
+  \begin{center}
+    \Large\textbf{FIXED INCOME INTERNALISER} \\
+    \large DRAFT - First Strategies \\
+    \vspace{5pt}
+    \normalsize\today
+  \end{center}
+  \vspace{15pt}
+}
+
+\begin{document}
+\maketitletwo
+
+\section{Internalisation Engine}
+Under normal conditions, the internaliser continuously computes two-sided quotes for several hedging instruments\footnote{The focus is on Eurex Bond Futures.}. It is called the \textbf{Internal Market}.\\
+\\
+A first iteration of the new internaliser does not directly expose the quotes to traders. Instead, the internal market is used as a pre-computation of what the internaliser is ready to match. During the interception of a trader order, the internaliser will first check if the order matches its quotes of the internal market, and if it is the case it will apply a simple set of last looks. As a result, the FPM will retain a trader order for a minimal duration of time, reducing the slippage cost of using the internaliser to an acceptable level. The current IX needs 10ms to release an order and a median of 4ms to match it. The new internaliser's requirement is to systematically match or release trader orders under 2ms.\\
+\\
+One aim of the internaliser is to act as a market maker which facilitates the matching of internal orders. It relies on an in-house algorithmic execution and a dedicated risk management.\\
+\\
+The \textbf{Internalisation Engine (IE)} is in charge of the risk management. It drives the quoting mechanism and the decision to place orders on external venues. To do so, it combines two streams:
+\begin{itemize}
+\item \textbf{Market Stream (MS)}: guarantees a core quoting service based on execution performance. This strategy does not intend to hold risk.\footnote{The legacy IX only has an equivalent of a Market Stream.}
+\item \textbf{Trading Stream (TS)}: provides an improved quoting service on one side, by taking risk to implement trading strategies.
+\end{itemize}
+The Internal Market is the internal order book computed by the IE from both the Market Stream and Trading Stream. It forms the synthetic two-sided quote (the \textbf{Internalisation Stream}) used to match trader orders.\\
+
+\subsection{Internalisation Stream: construction of the quotes}
+
+
+The Internalisation Stream is driven by changes in the order book, updates to the Core and Trading Stream positions, and configuration parameters.\\
+It generates double sided quotes which simplify the processing of any incoming trading orders.
+\subsubsection{Construction of quotes}
+
+\begin{algorithm}[H]
+\caption{Update Quote}
+\begin{algorithmic}[1]
+\State \textbf{Input:} Order book $OB$, Market Stream $MS$, Trading Stream $TS$
+\State $s \gets TS.\text{side}()$ \Comment{Side the Trading Stream is quoting}
+\State $\bar{s} \gets$ opposite of $s$
+\State Retrieve market quote on side $s$: $Q_s \gets MS.\text{get}(s)$
+\State Retrieve trading quote: $Q_{ts} \gets TS.\text{get}()$
+\State $p_s \gets Q_s.\text{price}$
+\State $q_s \gets Q_s.\text{qty} + Q_{ts}.\text{qty}$
+\State $q_s \gets \min(q_s, \text{protect\_quote\_qty\_cap})$
+\State Construct capped quote: $Q'_s \gets (s, p_s, q_s)$
+\State Retrieve and cap opposite side quote: $Q_{\bar{s}} \gets CS.\text{get}(\bar{s})$
+\State $q_{\bar{s}} \gets \min(Q_{\bar{s}}.\text{qty}, \text{protect\_quote\_qty\_cap})$
+\State $Q'_{\bar{s}} \gets (\bar{s}, Q_{\bar{s}}.\text{price}, q_{\bar{s}})$
+\State Construct new quote pair: $DSQ \gets \text{build}(Q'_s, Q'_{\bar{s}})$
+\State Record quote creation time: $\text{creation\_time} \gets \min(CS.\text{creation\_time}, TS.\text{creation\_time})$
+\State \Return $DSQ$
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection{Protections}
+Overview of protections which may reduce risk exposure:
+\begin{itemize}
+\item \textbf{Multi-Hit Protection}:
+\item \textbf{Market Risk limit Protection}:
+\item \textbf{}:
+\end{itemize}
+
+
+\subsection{Market Stream}
+Market Streams continuously determine for double-sided quotes. The quotes could be in quantity and not always centred are the market mid.\\
+\\
+The Market Stream estimates how much the Internalisation Engine can quote, assuming the resulting trade would be immediately passed to the execution engine.\\
+\\
+It considers short-term signals such as expected next-tick movement or order book imbalance on Eurex. In summary, a Market Stream does not intend to build up risk other that what the Execution Engine can systematically offset.
+\subsection{Top Level Market Stream}
+\subsubsection{Next Tick Prediction Model}
+The model predicts the next mid move of the Eurex market\footnote{it is the Market Direction Forecast Model [AMM IX].
+}
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{|c|l|}
+\hline
+\textbf{Value} & \textbf{Description of Mid-Price Movement} \\
+\hline
++1 & Move up \\
+0  & No direction \\
+-1 & Move down \\
+\hline
+\end{tabular}
+\caption{Prediction range for mid-price movement}
+\label{tab:prediction_range}
+\end{table}
+
+\subsubsection{Top Level Market Stream and Prediction-Based Adjustment}
+
+Assume the market tick size is $0.01$ and the currently observed Top of the Book is:
+
+\[
+\text{BID@100.00} \;|\; \text{ASK@100.01}
+\]
+
+\paragraph{Case: Next Tick Prediction Model = \boldmath$+1$}
+\[
+\text{Adjusted Market Stream:} \quad \text{BID@100.00} \;|\; \textbf{ASK@100.02}
+\]
+
+\begin{itemize}
+    \item Passive limit buy or sell orders at $100.00$ and $100.01$ do \textbf{not} match the Market Stream (MS).
+    \item A spread-crossing sell order @100.00 or a market sell order \textbf{matches} the MS.
+    \item A spread-crossing buy order @100.01 does \textbf{not} match the MS.
+    \item A limit buy order @100.02 (aggressing through the adjusted ask) \textbf{matches} the MS.
+\end{itemize}
+
+\paragraph{Case: Next Tick Prediction Model = \boldmath$-1$}
+\[
+\text{Adjusted Market Stream:} \quad \textbf{BID@99.99} \;|\; \text{ASK@100.01}
+\]
+
+\begin{itemize}
+    \item Passive limit buy or sell orders at $100.00$ and $100.01$ do \textbf{not} match the MS.
+    \item A spread-crossing buy order @100.01 or a market buy order \textbf{matches} the MS.
+    \item A spread-crossing sell order @100.00 does \textbf{not} match the MS.
+    \item A limit sell order @99.99 (aggressing through the adjusted bid) \textbf{matches} the MS.
+\end{itemize}
+
+\paragraph{Case: Next Tick Prediction Model = \boldmath$0$}
+\[
+\text{Adjusted Market Stream:} \quad \text{BID@100.00} \;|\; \text{ASK@100.01}
+\]
+
+\begin{itemize}
+    \item Passive limit buy or sell orders at $100.00$ and $100.01$ do \textbf{not} match the MS.
+    \item A spread-crossing buy order @100.01 or a market buy order \textbf{matches} the MS.
+    \item A spread-crossing sell order @100.00 or a market sell order \textbf{matches} the MS.
+\end{itemize}
+
+\subsubsection{$N^{\text{th}}$ Level Market Stream}
+
+
+\subsubsection{$N^{th}$ Level Market Stream}
+
+
+\subsection{Trading Stream}
+Trading streams implement trading strategies using the flow of trader orders. It is rather a one sided quote which offers additional liquidity in the Internal Market.\\
+\\
+The Trading Stream is also intended to hold risk without systematically executing the resulting exposure on the external market.By design, a Trading Stream should reduce external execution rates and increase internalisation rates.\\
+\\
+Implementation of a trading strategy:
+\begin{itemize}
+\item Entering a position (i.e., risk taking) is only performed via trader-initiated orders.\\
+\item Exiting a position (i.e., risk reduction) can occur either passively through trader orders or actively via the Eurex market. 
+\end{itemize}
+
+A Trading Stream computes quotes that the IE is ready to hold if traded. These quotes are an expression of the distance of the current position to the trading strategy's targets.
+
+\subsubsection{Streaming Quantities}
+The quoted quantity is influenced by:
+
+\begin{itemize}
+    \item Current book position;
+    \item Risk-adjusted position;
+    \item Market forecast signal.
+\end{itemize}
+
+\subsubsection{Trading Strategy: Risk-Adjusted Position Sizing}
+
+We define the worst acceptable intra-day loss for a given futures instrument\footnote{For simplicity, we assume this already accounts for the estimated cost of closing the position during an extreme event.}:
+
+\begin{align*}
+\text{Max Instrument Trading Loss} &= 10{,}000~\text{EUR}
+\end{align*}
+
+Assume we set a protective threshold based on an expected price move:
+
+\begin{align*}
+\text{Max Tick Loss} &= 50~\text{ticks} \\
+\text{Max Price Loss} &= 0.50~\text{EUR}
+\end{align*}
+
+Then the maximum number of contracts allowed during such an event is:
+
+\begin{align*}
+\text{Max Contracts in Extreme Event} &= \frac{\text{Max Instrument Trading Loss}}{\text{Multiplier} \times \text{Max Price Loss}} \\
+&= \frac{10{,}000}{10{,}000 \times 0.5} \\
+&= 50~\text{contracts}
+\end{align*}
+
+This policy instructs the IE to close all positions if such an event occurs within a break period $T_{\text{break}}$. For illustration, we set $T_{\text{break}} = 1$ hour, aligned with the volatility observation window.
+
+\medskip
+
+Empirically, we compute the distribution of price returns over $T_{\text{break}}$ and observe that this stop-loss level corresponds to the $x$-quantile of the return distribution.
+
+\subsubsection{Risk Limits}
+Similar to the algo IRD, the IE has some risk limits. These risk limits are implemented during the construction of the Trading Stream, as it intends to influence the current positions. It is opposed to the Market Stream which estimates how much risk it could directly offset the Execution Engine.
+
+\subsubsection{Position Capping Criteria}
+
+Position capping should reflect:
+
+\begin{itemize}
+    \item Market liquidity and the execution engine's ability to unwind exposure rapidly;
+    \item Maximum acceptable cost to aggress the order book.
+\end{itemize}
+
+\begin{algorithm}[H]
+\caption{Check Intercept Order}
+\begin{algorithmic}[1]
+\State \textbf{Input:} Order price $p$, quantity $q$, direction $w$, current time $t$
+\State Retrieve quote $Q$ on side matching $w$
+\If{$t - Q.\text{creation\_time} > \text{quote\_safety\_max\_lifetime}$}
+    \State \Return Reject with reason \textit{Quote expired}
+\EndIf
+\State $q_{\text{fill}} \gets Q.\text{check\_can\_fill}(p, q)$
+\If{$q_{\text{fill}} \leq 0$}
+    \State \Return Reject with reason \textit{No matching with current quotes''}
+\EndIf
+\If{$t - \text{creation\_time} > \text{protect\_last\_look\_stale\_time}$}
+    \State \Return Reject with reason \textit{Stale time}
+\EndIf
+\If{$\frac{|\:p - Q.\text{price}\:|}{\text{tick\_size}} > \text{protect\_last\_look\_spread\_tick}$}
+    \State \Return Reject with reason \textit{Fails spread tick protection}
+\EndIf
+\State \Return Accept with filled quantity $q_{\text{fill}}$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\caption{Check Can Fill}
+\begin{algorithmic}[1]
+\State \textbf{Input:} Quote side $s$, quote price $p_q$, quote quantity $q_q$
+\State \hspace{1.5em}Order price $p_o$, order quantity $q_o$
+\If{$s = \text{BID}$}
+    \If{$p_o \leq p_q$}
+        \State \Return $\min(q_q, q_o)$
+    \Else
+        \State \Return $0$
+    \EndIf
+\ElsIf{$s = \text{ASK}$}
+    \If{$p_o \geq p_q$}
+        \State \Return $\min(q_q, q_o)$
+    \Else
+        \State \Return $0$
+    \EndIf
+\Else
+    \State \Return $0$
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+\subsubsection{Internaliser Protections}
+Protections include:
+\begin{itemize}
+    \item Stream throttling in case of rapid adverse market moves;
+    \item Quote widening when inventory exceeds soft limits;
+    \item Quote pausing if execution quality deteriorates or latency spikes.
+\end{itemize}
+
+See Optiver's explanation of \href{https://optiver.com/insights/market-maker-protections/}{Market Maker Protections}\footnote{\url{https://optiver.com/insights/market-maker-protections/}}.
+
+\subsection{Trader Order: Last Look}
+\subsection{Hedging}
+
+Hedging actions are triggered by:
+
+\begin{itemize}
+    \item Changes in the internaliser's target position (due to trader order fills);
+    \item Updates from the trading streams (e.g., directional prediction flips or volatility changes).
+   
+\end{itemize}
+\subsubsection{Hedging When Outside Trading Stream Side}
+If the current position is on the opposite side of the Trading Stream, a full hedge is triggered using the VWAP price of the opening position as the reference.
+
+\subsubsection{Hedging Within Trading Stream Side}
+When the position aligns with the Trading Stream direction, the IE may use passive or time-weighted execution based on alpha confidence and inventory limits.\\
+The risk limits should follow a loss-less decomposition of the portfolio risk along the trading strategy dimensions:
+\begin{itemize}
+\item Core Risk: Active Bund
+\item Curve Risk: Bobl–Bund, Bund–Buxl, Schatz–Bobl
+\item Core–Semi-Core Risk: OAT–Bund
+\item Calendar Spread Risk: Active–Next Spread
+\end{itemize}
+
+\section{Execution Stack}
+\subsection{Execution Smart Logic}
+\subsection{Execution Engine}
+\end{document}
